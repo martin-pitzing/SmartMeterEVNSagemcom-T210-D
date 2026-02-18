@@ -66,7 +66,8 @@ ser = serial.Serial( port=comport,
          baudrate=2400,
          bytesize=serial.EIGHTBITS,
          parity=serial.PARITY_NONE,
-         stopbits=serial.STOPBITS_ONE
+         stopbits=serial.STOPBITS_ONE,
+         timeout=30
 )
 
 #MQTT Init
@@ -85,10 +86,9 @@ if useinfluxdb:
     try:
         clientinfluxdb = InfluxDBClient(host=influxdbhost, port=influxdbport, database=influxdbdatenbank)
     except Exception as err:
-        print("Kann nicht mit InfluxDB verbinden!")
-        print()
+        print("Warnung: Kann nicht mit InfluxDB verbinden! Versuche später erneut zu verbinden.")
         print("Fehler: ", format(err))
-        sys.exit()
+        clientinfluxdb = None
     
 
 # Werte im XML File
@@ -114,7 +114,23 @@ def evn_decrypt(frame, key, systemTitel, frameCounter):
     return cipher.decrypt(frame).hex()
 
 while 1:
-    daten = ser.read(size=282).hex()    
+    # Initialize all measurement variables to default values
+    WirkenergieP = WirkenergieN = 0.0
+    MomentanleistungP = MomentanleistungN = 0
+    SpannungL1 = SpannungL2 = SpannungL3 = 0.0
+    StromL1 = StromL2 = StromL3 = 0.0
+    Leistungsfaktor = 0.0
+    
+    daten = ser.read(size=282)
+    
+    # Check if we received enough data (timeout detection)
+    if len(daten) < 282:
+        print("Timeout beim Lesen vom seriellen Port (erhalten: {} bytes, erwartet: 282). Warte und versuche erneut.".format(len(daten)))
+        ser.reset_input_buffer()
+        sleep(2)
+        continue
+    
+    daten = daten.hex()    
     mbusstart = daten[0:8]
     frameLen=int("0x" + mbusstart[2:4],16)
     systemTitel = daten[22:38]
@@ -125,9 +141,10 @@ while 1:
     else:
         print("wrong M-Bus Start, restarting")
         sleep(2.5)
-        ser.flushOutput()
+        ser.reset_input_buffer()
         ser.close()
         ser.open()
+        continue
 
     apdu = evn_decrypt(frame,key,systemTitel,frameCounter)
     if apdu[0:4] != "0f80" :
@@ -285,10 +302,38 @@ while 1:
                 "time": mytime
             }
             ]
-            clientinfluxdb.write_points(json_body,database=influxdbdatenbank)
-    except BaseException as err:
+            
+            # Retry loop with reconnection logic
+            retry_count = 0
+            max_retries = 3
+            write_successful = False
+            
+            while retry_count < max_retries and not write_successful:
+                try:
+                    # Try to reconnect if client is None or connection failed before
+                    if clientinfluxdb is None:
+                        print("Versuche InfluxDB-Verbindung wiederherzustellen...")
+                        clientinfluxdb = InfluxDBClient(host=influxdbhost, port=influxdbport, database=influxdbdatenbank)
+                    
+                    clientinfluxdb.write_points(json_body,database=influxdbdatenbank)
+                    write_successful = True
+                except Exception as write_err:
+                    retry_count += 1
+                    print("InfluxDB Schreibfehler (Versuch {}/{}): {}".format(retry_count, max_retries, format(write_err)))
+                    
+                    if retry_count < max_retries:
+                        # Try to recreate the client for next retry
+                        try:
+                            clientinfluxdb = InfluxDBClient(host=influxdbhost, port=influxdbport, database=influxdbdatenbank)
+                        except Exception:
+                            clientinfluxdb = None
+                        sleep(2)
+                    else:
+                        print("InfluxDB Schreiben fehlgeschlagen nach {} Versuchen. Überspringe diesen Datensatz.".format(max_retries))
+                        clientinfluxdb = None
+            
+    except Exception as err:
         print("Es ist ein Fehler aufgetreten.")
-        print()
         print("Fehler: ", format(err))
-        sys.exit()
+        continue
 
