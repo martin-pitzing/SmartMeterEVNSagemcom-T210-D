@@ -317,7 +317,7 @@ while 1:
                     
                     clientinfluxdb.write_points(json_body,database=influxdbdatenbank)
                     write_successful = True
-                except BaseException as write_err:
+                except Exception as write_err:
                     retry_count += 1
                     print("InfluxDB Schreibfehler (Versuch {}/{}): {}".format(retry_count, max_retries, format(write_err)))
                     
@@ -325,14 +325,14 @@ while 1:
                         # Try to recreate the client for next retry
                         try:
                             clientinfluxdb = InfluxDBClient(host=influxdbhost, port=influxdbport, database=influxdbdatenbank)
-                        except:
+                        except Exception:
                             clientinfluxdb = None
                         sleep(2)
                     else:
                         print("InfluxDB Schreiben fehlgeschlagen nach {} Versuchen. Überspringe diesen Datensatz.".format(max_retries))
                         clientinfluxdb = None
             
-    except BaseException as err:
+    except Exception as err:
         print("Es ist ein Fehler aufgetreten.")
         print("Fehler: ", format(err))
         continue
